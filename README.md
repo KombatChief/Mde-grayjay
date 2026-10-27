@@ -17,17 +17,16 @@ Sources → MDE.tv → **Login**. Sign in on the MDE.tv page that opens. When th
 
 ## Put all shows in the Creators tab
 
-After logging in: Sources → MDE.tv → **Import subscriptions**. The plugin subscribes you to every series listed on mde.tv/series, so each show shows up under Creators. Run it again later to pick up new shows.
+After logging in: Sources → MDE.tv → **Import subscriptions**. The plugin subscribes you to every series on mde.tv/series and every screed writer, so each one shows up under Creators. Run it again later to pick up new shows and writers.
 
-You can also find individual shows by searching with the **Channels** filter.
+You can also find individual shows or writers by searching with the **Channels** filter.
 
 ## How it works
 
-MDE.tv is a Next.js site with no public API. The plugin loads the same pages your browser does (with your login cookies when you're signed in) and reads the series list, episode list and stream URLs from the data embedded in each page. It recognises HLS (`.m3u8`), MP4 and Mux playback IDs.
+The plugin uses MDE.tv's own API (api.mde.tv), the same one the website uses, with your login cookies when you're signed in. Episodes play from the signed HLS stream the site's player uses. Screeds appear as posts; writers' screeds are listed on their creator page.
 
 ## If something doesn't work
 
 Turn on **Debug logging** in the plugin's settings, reproduce the problem, then check Grayjay's log (Settings → Developer, or Grayjay Desktop's dev portal). Lines start with `[MDE.tv]` and show what was found on each page.
 
-- **Login window never closes:** the site may not redirect to the exact home URL after sign-in. Tap the MDE.tv logo to go home; if it still stays open, the `completionUrl` in the config needs changing, or switch to `cookiesToFind` with the session cookie's name.
-- **"Couldn't find a playable stream":** the site isn't embedding the stream URL in the page HTML (it's fetched separately by the player). The fix is to add that request to `getContentDetails` once its URL is known.
+- **"Your MDE.tv account doesn't have access" on videos you can watch on the site:** your saved login has expired. Log out and back in under Sources → MDE.tv.

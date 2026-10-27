@@ -1,6 +1,6 @@
 {
   "name": "MDE.tv",
-  "description": "Million Dollar Extreme content from MDE.tv. Every MDE.tv series shows up as a creator; log in to play members-only videos.",
+  "description": "Million Dollar Extreme content from MDE.tv. Every series and screed writer shows up as a creator; log in to play members-only videos.",
   "author": "Unofficial",
   "authorUrl": "",
   "platformUrl": "https://www.mde.tv",
@@ -8,31 +8,57 @@
   "scriptUrl": "./MDETVScript.js",
   "iconUrl": "https://cdn.mde.tv/logos/logo-basic-alt-white.png",
   "id": "0a59adc6-e8fa-4c72-8227-3ab303b0c72b",
-  "version": 2,
+  "version": 3,
   "scriptSignature": "",
   "scriptPublicKey": "",
-  "packages": ["Http"],
+  "packages": [
+    "Http"
+  ],
   "allowEval": false,
-  "allowUrls": ["everywhere"],
+  "allowUrls": [
+    "mde.tv",
+    ".mde.tv"
+  ],
   "supportedClaimTypes": [],
   "authentication": {
     "loginUrl": "https://www.mde.tv/",
-    "cookiesToFind": ["mde-access-token", "mde-refresh-token"],
+    "cookiesToFind": [
+      "mde-access-token",
+      "mde-refresh-token"
+    ],
     "cookiesExclOthers": false,
     "userAgent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36",
     "loginWarning": "Open the menu at the top of the MDE.tv page and sign in. Grayjay saves your session and closes this window as soon as you're logged in."
   },
   "settings": [
     {
+      "variable": "homeScreeds",
+      "name": "Show screeds on Home",
+      "description": "Mix MDE.tv screeds (articles) into the Home feed alongside new episodes.",
+      "type": "Boolean",
+      "default": "true"
+    },
+    {
       "variable": "debugLogging",
       "name": "Debug logging",
-      "description": "Write what the plugin finds on each MDE.tv page to the Grayjay log (useful for fixing the plugin if the site changes).",
+      "description": "Write API errors and details to the Grayjay log (useful for fixing the plugin if the site changes).",
       "type": "Boolean",
       "default": "false"
     }
   ],
   "changelog": {
-    "1": ["Initial version: series as creators, subscription import, login for paid videos"],
-    "2": ["Login now starts on the MDE.tv home page and completes when the MDE.tv session cookies are set"]
+    "1": [
+      "Initial version: series as creators, subscription import, login for paid videos"
+    ],
+    "2": [
+      "Login now starts on the MDE.tv home page and completes when the MDE.tv session cookies are set"
+    ],
+    "3": [
+      "Rewritten to use the MDE.tv API: videos now play (signed HLS streams)",
+      "Screeds added as posts, with each writer as a creator",
+      "Import subscriptions adds every series and writer",
+      "Search uses MDE.tv's own search",
+      "Captions, likes/dislikes and related videos"
+    ]
   }
 }
