@@ -4,7 +4,7 @@
   "author": "Unofficial",
   "authorUrl": "",
   "platformUrl": "https://www.mde.tv",
-  "sourceUrl": "https://YOUR-HOST/MDETVConfig.json",
+  "sourceUrl": "https://raw.githubusercontent.com/KombatChief/Mde-grayjay/refs/heads/main/MDETVConfig.json",
   "scriptUrl": "./MDETVScript.js",
   "iconUrl": "https://cdn.mde.tv/logos/logo-basic-alt-white.png",
   "id": "0a59adc6-e8fa-4c72-8227-3ab303b0c72b",
