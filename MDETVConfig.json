@@ -8,7 +8,7 @@
   "scriptUrl": "./MDETVScript.js",
   "iconUrl": "https://cdn.mde.tv/logos/logo-basic-alt-white.png",
   "id": "0a59adc6-e8fa-4c72-8227-3ab303b0c72b",
-  "version": 3,
+  "version": 4,
   "scriptSignature": "",
   "scriptPublicKey": "",
   "packages": [
@@ -39,6 +39,13 @@
       "default": "true"
     },
     {
+      "variable": "syncWatched",
+      "name": "Sync watched videos to MDE.tv",
+      "description": "When logged in, tell MDE.tv about episodes you watch in Grayjay so they show as watched on the website.",
+      "type": "Boolean",
+      "default": "true"
+    },
+    {
       "variable": "debugLogging",
       "name": "Debug logging",
       "description": "Write API errors and details to the Grayjay log (useful for fixing the plugin if the site changes).",
@@ -59,6 +66,10 @@
       "Import subscriptions adds every series and writer",
       "Search uses MDE.tv's own search",
       "Captions, likes/dislikes and related videos"
+    ],
+    "4": [
+      "Episodes you watch in Grayjay are marked watched on MDE.tv (when logged in)",
+      "Episodes marked watched on MDE.tv show as watched in Grayjay"
     ]
   }
 }
