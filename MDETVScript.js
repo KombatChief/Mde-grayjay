@@ -371,14 +371,23 @@ class MdePlaybackTracker extends PlaybackTracker {
 
     onProgress(seconds, isPlaying) {
         if (!(this.duration > 0)) return;
+        this.lastPosition = Math.max(0, Math.min(seconds, this.duration));
         if (!isPlaying) { this.prev = null; this.maybeFlush(); return; }
         this.sample(seconds);
+        // Same rule as the site: finished once playback passes 95% (min 10s)
         if (!this.finishSent && seconds > Math.max(this.duration * 0.95, 10)) this.finish();
         this.maybeFlush();
     }
 
+    // Grayjay calls this whenever you leave the video (not only at the end),
+    // so it must NOT mark the episode finished. Like the site when you close
+    // the player: record where you exited and send the final report.
     onConcluded() {
-        this.finish();
+        if (this.snap) {
+            this.snap.interactions.exitedAt = new Date(Date.now()).toISOString();
+            this.snap.interactions.exitPosition = this.lastPosition ?? null;
+            this.changes++;
+        }
         this.flush();
         this.snap = null;
         this.prev = null;
