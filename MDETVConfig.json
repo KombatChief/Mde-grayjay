@@ -1,6 +1,6 @@
 {
   "name": "MDE.tv",
-  "description": "Million Dollar Extreme content from MDE.tv. Every series and screed writer shows up as a creator; log in to play members-only videos.",
+  "description": "Million Dollar Extreme content from MDE.tv: every video series, audio series and screed writer shows up as a creator; log in to play members-only content.",
   "author": "Unofficial",
   "authorUrl": "",
   "platformUrl": "https://www.mde.tv",
@@ -8,7 +8,7 @@
   "scriptUrl": "./MDETVScript.js",
   "iconUrl": "https://cdn.mde.tv/logos/logo-basic-alt-white.png",
   "id": "0a59adc6-e8fa-4c72-8227-3ab303b0c72b",
-  "version": 8,
+  "version": 10,
   "scriptSignature": "",
   "scriptPublicKey": "",
   "packages": [
@@ -51,6 +51,20 @@
       "description": "Write API errors and details to the Grayjay log (useful for fixing the plugin if the site changes).",
       "type": "Boolean",
       "default": "false"
+    },
+    {
+      "variable": "audioCreators",
+      "name": "Include audio series",
+      "description": "Add the Listen section's audio series (podcast audio, music, soundtracks) as creators when importing subscriptions and searching.",
+      "type": "Boolean",
+      "default": "true"
+    },
+    {
+      "variable": "mp4Sources",
+      "name": "Offer MP4 qualities",
+      "description": "Add the site's MP4 download files (1080p/720p/480p, when an episode has them) as extra quality options. Useful for downloads and casting.",
+      "type": "Boolean",
+      "default": "true"
     }
   ],
   "changelog": {
@@ -82,6 +96,14 @@
     ],
     "8": [
       "Fix: leaving a video no longer marks it watched; only playing past 95% does"
+    ],
+    "9": [
+      "Audio (Listen) series as creators, playable as MP3",
+      "MP4 1080p/720p/480p qualities when the site has download files for an episode",
+      "Chapter markers when an episode has chapters"
+    ],
+    "10": [
+      "Imports your MDE.tv watch history into Grayjay's history (on startup, or Sources \u2192 MDE.tv \u2192 Sync history)"
     ]
   }
 }
