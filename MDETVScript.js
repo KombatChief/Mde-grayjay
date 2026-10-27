@@ -187,6 +187,8 @@ function getVideoDetails(seriesTag, slug) {
     if (!v) throw new UnavailableException("MDE.tv couldn't find this video.");
     const d = j.details ?? {};
     const series = getSeriesList().find(s => s.tag === (v.series_tag ?? seriesTag));
+    cache.videoInfo = cache.videoInfo ?? {};
+    cache.videoInfo[slug] = { id: v.id, duration: num(v.duration) ?? 0 };
 
     // Signed HLS playlist (requires access to the series for paid videos)
     const signResp = http.GET(apiUrl("/videos/" + v.id + "/sign"), apiHeaders(), bridge.isLoggedIn());
@@ -245,6 +247,71 @@ function getVideoDetails(seriesTag, slug) {
         }
     };
     return details;
+}
+
+// ---------------------------------------------------------------------------
+// Watch sync: tells MDE.tv what you watched in Grayjay (same calls the site's
+// player makes). Only active while logged in.
+// ---------------------------------------------------------------------------
+
+source.getPlaybackTracker = function (url) {
+    if (!bridge.isLoggedIn()) return null;
+    if (settings.syncWatched === false || settings.syncWatched === "false") return null;
+    const m = REGEX_VIDEO.exec(url ?? "");
+    if (!m) return null;
+    let info = cache.videoInfo?.[m[2]];
+    if (!info) {
+        try {
+            const v = apiGetJson("/videos/" + m[2]).video;
+            info = { id: v.id, duration: num(v.duration) ?? 0 };
+        } catch (e) { return null; }
+    }
+    return new MdePlaybackTracker(info.id, info.duration);
+};
+
+class MdePlaybackTracker extends PlaybackTracker {
+    constructor(videoId, duration) {
+        super(10 * 1000);
+        this.videoId = videoId;
+        this.duration = duration;
+        this.playedSeconds = 0;
+        this.lastSeconds = null;
+        this.historySent = false;
+        this.finishSent = false;
+    }
+    onInit(seconds) { this.lastSeconds = seconds; }
+    onProgress(seconds, isPlaying) {
+        if (isPlaying && this.lastSeconds !== null) {
+            const delta = seconds - this.lastSeconds;
+            if (delta > 0 && delta < 30) this.playedSeconds += delta; // ignore seeks
+        }
+        this.lastSeconds = seconds;
+        // Count as "watched" after ~30s of real playback (like the site)
+        if (!this.historySent && this.playedSeconds >= Math.min(30, (this.duration || 60) / 2)) {
+            this.historySent = postWatch(this.videoId, "history");
+        }
+        if (!this.finishSent && this.duration > 0 && seconds >= this.duration * 0.92) {
+            if (!this.historySent) this.historySent = postWatch(this.videoId, "history");
+            this.finishSent = postWatch(this.videoId, "finish");
+        }
+    }
+    onConcluded() {
+        if (!this.finishSent) {
+            if (!this.historySent) this.historySent = postWatch(this.videoId, "history");
+            this.finishSent = postWatch(this.videoId, "finish");
+        }
+    }
+}
+
+function postWatch(videoId, action) {
+    try {
+        const r = http.POST(apiUrl("/videos/" + videoId + "/" + action), "", apiHeaders(), true);
+        debug("POST /videos/" + videoId + "/" + action + " -> HTTP " + r.code);
+        return r.isOk;
+    } catch (e) {
+        log("watch sync failed: " + e);
+        return false;
+    }
 }
 
 function getPostDetails(id) {
@@ -322,7 +389,11 @@ function toPlatformVideo(v, series) {
     const seriesName = v.series_name ?? series?.name ?? tag.toUpperCase();
     const url = SITE + "/series/" + tag + "/" + v.tag;
     const thumb = cdnImage(v.medium_thumbnail) ?? cdnImage(v.small_thumbnail) ?? cdnImage(v.thumbnail) ?? DEFAULT_THUMB;
+    // Videos marked watched on the website show as watched in Grayjay
+    const watched = v.watched === true;
     return new PlatformVideo({
+        playbackTime: watched ? Math.round(num(v.duration) ?? 1) : -1,
+        playbackDate: watched ? (toUnix(v.published_at ?? v.created_at) ?? undefined) : undefined,
         id: new PlatformID(PLATFORM, v.id ?? v.tag, config.id),
         name: v.title ?? v.tag,
         thumbnails: new Thumbnails([new Thumbnail(thumb, 720)]),
