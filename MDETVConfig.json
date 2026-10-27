@@ -8,7 +8,7 @@
   "scriptUrl": "./MDETVScript.js",
   "iconUrl": "https://cdn.mde.tv/logos/logo-basic-alt-white.png",
   "id": "0a59adc6-e8fa-4c72-8227-3ab303b0c72b",
-  "version": 4,
+  "version": 7,
   "scriptSignature": "",
   "scriptPublicKey": "",
   "packages": [
@@ -40,8 +40,8 @@
     },
     {
       "variable": "syncWatched",
-      "name": "Sync watched videos to MDE.tv",
-      "description": "When logged in, tell MDE.tv about episodes you watch in Grayjay so they show as watched on the website.",
+      "name": "Count Grayjay viewing on MDE.tv",
+      "description": "When logged in, report what you watch in Grayjay to MDE.tv the same way the website's player does, so it counts toward watch time and achievements. Episodes are marked finished after 95%.",
       "type": "Boolean",
       "default": "true"
     },
@@ -70,6 +70,15 @@
     "4": [
       "Episodes you watch in Grayjay are marked watched on MDE.tv (when logged in)",
       "Episodes marked watched on MDE.tv show as watched in Grayjay"
+    ],
+    "5": [
+      "Episodes are only marked watched on MDE.tv after playing past 95%, matching the website"
+    ],
+    "6": [
+      "Grayjay viewing now counts toward MDE.tv watch time and achievements (sends the same playback reports as the website's player)"
+    ],
+    "7": [
+      "Comments and replies on episodes and screeds (newest first, pinned comments on top)"
     ]
   }
 }
