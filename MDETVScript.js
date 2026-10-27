@@ -25,6 +25,7 @@ const REGEX_POST = /^https?:\/\/(?:www\.)?mde\.tv\/posts\/([A-Za-z0-9_-]+)\/?(?:
 let config = {};
 let settings = {};
 let cache = {};
+let state = {};
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -34,9 +35,11 @@ source.enable = function (conf, sett, savedState) {
     config = conf ?? {};
     settings = sett ?? {};
     cache = {};
+    state = {};
+    try { if (savedState) state = JSON.parse(savedState) ?? {}; } catch (e) { state = {}; }
 };
 
-source.saveState = function () { return ""; };
+source.saveState = function () { return JSON.stringify(state); };
 
 // ---------------------------------------------------------------------------
 // Home
@@ -250,6 +253,76 @@ function getVideoDetails(seriesTag, slug) {
 }
 
 // ---------------------------------------------------------------------------
+// Comments (videos and screeds). MDE.tv returns 10 per page, newest first,
+// with replies included on each comment.
+// ---------------------------------------------------------------------------
+
+source.getComments = function (url) {
+    let m = REGEX_VIDEO.exec(url ?? "");
+    if (m) {
+        const id = videoIdForSlug(m[2]);
+        return new MdeCommentPager("/videos/" + id + "/comments", url, 0);
+    }
+    m = REGEX_POST.exec(url ?? "");
+    if (m) return new MdeCommentPager("/comments/" + m[1], url, 0);
+    return new CommentPager([], false, {});
+};
+
+source.getSubComments = function (comment) {
+    let replies = [];
+    try { replies = JSON.parse(comment.context?.replies ?? "[]"); } catch (e) { }
+    return new CommentPager(replies.map(r => toPlatformComment(r, comment.contextUrl, true)), false, {});
+};
+
+class MdeCommentPager extends CommentPager {
+    constructor(path, contextUrl, page) {
+        const j = apiGetJson(path + "?page=" + page + "&sort_by=created_at&sort_order=desc");
+        const list = [];
+        // Pinned comments go first, on the first page only
+        if (page === 0) for (const c of (j.pinnedComments ?? [])) list.push(toPlatformComment(c, contextUrl, false, true));
+        const pinnedIds = {};
+        for (const c of (j.pinnedComments ?? [])) pinnedIds[c.id] = 1;
+        for (const c of (j.comments ?? [])) if (!pinnedIds[c.id]) list.push(toPlatformComment(c, contextUrl, false));
+        const shown = (page + 1) * 10;
+        super(list, (j.comments ?? []).length > 0 && shown < (j.total ?? 0), { path: path, page: page });
+        this.path = path;
+        this.contextUrl = contextUrl;
+        this.page = page;
+    }
+    nextPage() { return new MdeCommentPager(this.path, this.contextUrl, this.page + 1); }
+}
+
+function toPlatformComment(c, contextUrl, isReply, pinned) {
+    const u = c.user ?? {};
+    let message = c.message ?? "";
+    if (c.gif) message += (message ? "\n" : "") + "[GIF] " + (typeof c.gif === "string" ? c.gif : (c.gif.url ?? ""));
+    if (pinned) message = "📌 " + message;
+    const replies = isReply ? [] : (c.replies ?? []);
+    return new Comment({
+        contextUrl: contextUrl,
+        author: new PlatformAuthorLink(
+            new PlatformID(PLATFORM, u.id ?? "", config.id),
+            u.display_name ?? "Anonymous",
+            "",
+            u.photo ?? LOGO),
+        message: message,
+        rating: new RatingLikesDislikes(num(c.likes) ?? 0, num(c.dislikes) ?? 0),
+        date: toUnix(c.created_at) ?? 0,
+        replyCount: replies.length,
+        context: { id: c.id ?? "", replies: JSON.stringify(replies) }
+    });
+}
+
+function videoIdForSlug(slug) {
+    const known = cache.videoInfo?.[slug];
+    if (known) return known.id;
+    const v = apiGetJson("/videos/" + slug).video;
+    cache.videoInfo = cache.videoInfo ?? {};
+    cache.videoInfo[slug] = { id: v.id, duration: num(v.duration) ?? 0 };
+    return v.id;
+}
+
+// ---------------------------------------------------------------------------
 // Watch sync: tells MDE.tv what you watched in Grayjay (same calls the site's
 // player makes). Only active while logged in.
 // ---------------------------------------------------------------------------
@@ -269,38 +342,209 @@ source.getPlaybackTracker = function (url) {
     return new MdePlaybackTracker(info.id, info.duration);
 };
 
+// A port of the website player's playback tracker. MDE.tv's achievements
+// (watch time, finished episodes, binges, late-night viewing, ...) are worked
+// out on the server from these playback reports, so sending the same reports
+// from Grayjay makes Grayjay viewing count.
+//
+// Rules copied from the site:
+//  - samples ~1s apart; a sample only counts if real time moved < 2.5s and the
+//    position moved forward at a plausible speed (so seeks/pauses don't count)
+//  - "qualified" after min(30s, half the video) of real watching
+//  - "completed" once 90% of the video's length has actually been watched
+//  - the episode is marked finished once playback passes 95% (or it ends)
+//  - a new session starts after 30 min idle, 6 h total, or 500 watched ranges
 class MdePlaybackTracker extends PlaybackTracker {
     constructor(videoId, duration) {
-        super(10 * 1000);
+        super(1000);
         this.videoId = videoId;
         this.duration = duration;
-        this.playedSeconds = 0;
-        this.lastSeconds = null;
-        this.historySent = false;
+        this.snap = null;       // current session snapshot (what gets sent)
+        this.prev = null;       // previous sample {position, at}
+        this.lastSentKey = "";
+        this.lastFlushAt = Date.now();
+        this.changes = 0;
         this.finishSent = false;
     }
-    onInit(seconds) { this.lastSeconds = seconds; }
+
+    onInit(seconds) { this.prev = null; }
+
     onProgress(seconds, isPlaying) {
-        if (isPlaying && this.lastSeconds !== null) {
-            const delta = seconds - this.lastSeconds;
-            if (delta > 0 && delta < 30) this.playedSeconds += delta; // ignore seeks
-        }
-        this.lastSeconds = seconds;
-        // Count as "watched" after ~30s of real playback (like the site)
-        if (!this.historySent && this.playedSeconds >= Math.min(30, (this.duration || 60) / 2)) {
-            this.historySent = postWatch(this.videoId, "history");
-        }
-        if (!this.finishSent && this.duration > 0 && seconds >= this.duration * 0.92) {
-            if (!this.historySent) this.historySent = postWatch(this.videoId, "history");
-            this.finishSent = postWatch(this.videoId, "finish");
-        }
+        if (!(this.duration > 0)) return;
+        if (!isPlaying) { this.prev = null; this.maybeFlush(); return; }
+        this.sample(seconds);
+        if (!this.finishSent && seconds > Math.max(this.duration * 0.95, 10)) this.finish();
+        this.maybeFlush();
     }
+
     onConcluded() {
-        if (!this.finishSent) {
-            if (!this.historySent) this.historySent = postWatch(this.videoId, "history");
-            this.finishSent = postWatch(this.videoId, "finish");
-        }
+        this.finish();
+        this.flush();
+        this.snap = null;
+        this.prev = null;
     }
+
+    sample(position) {
+        const now = Date.now();
+        const dur = this.duration;
+        position = Math.max(0, Math.min(position, dur));
+        const s = this.snap;
+        if (s && (now - Date.parse(s.startedAt) >= 216e5 || now - Date.parse(s.lastAt) >= 18e5 || s.ranges.length >= 500)) {
+            this.flush();
+            this.snap = null;
+            this.prev = null;
+        }
+        const prev = this.prev;
+        this.prev = { position: position, at: now };
+        if (!prev) return;
+
+        const dt = (now - prev.at) / 1000;
+        const dp = position - prev.position;
+        if (dt <= 0 || dt > 2.5 || dp < 0 || dp > 4.25 * dt || dp < 0.2 * dt) {
+            // Not normal playback: count it as a seek if the position jumped
+            if (this.snap && Math.abs(dp) > 1 && (dp < 0 || dp > 4.25 * dt)) {
+                const k = dp > 0 ? "forwardSeeks" : "backwardSeeks";
+                this.snap.interactions[k] = Math.min(1e4, this.snap.interactions[k] + 1);
+                this.changes++;
+            }
+            return;
+        }
+
+        if (!this.snap) this.snap = newSnapshot(this.videoId, dur, prev.at, now);
+        const r = this.snap;
+        r.duration = dur;
+        r.lastAt = new Date(now).toISOString();
+        r.watchSeconds += dt;
+
+        const before = sumRanges(r.ranges);
+        this.changes++;
+        r.ranges = mergeRanges(r.ranges, [prev.position, position]);
+        const after = sumRanges(r.ranges);
+        r.interactions.rewatchedSeconds += dt * Math.max(0, Math.min(1, (dp - (after - before)) / dp));
+
+        // Per-hour buckets (UTC hour start)
+        let b = prev.at;
+        while (b < now) {
+            const hStart = 36e5 * Math.floor(b / 36e5);
+            const hKey = new Date(hStart).toISOString();
+            const end = Math.min(now, hStart + 36e5);
+            let h = r.hours.find(x => x.hour === hKey);
+            if (!h) { h = { hour: hKey, watchSeconds: 0 }; r.hours.push(h); }
+            h.watchSeconds += (end - b) / 1000;
+            b = end;
+        }
+        // Per-day buckets with a 100-slot heatmap of where in the video time was spent
+        let k = prev.at;
+        while (k < now) {
+            const day = new Date(k).toISOString().slice(0, 10);
+            const end = Math.min(now, Date.parse(day + "T00:00:00Z") + 864e5);
+            const secs = (end - k) / 1000;
+            let d = r.days.find(x => x.day === day);
+            if (!d) { d = { day: day, watchSeconds: 0, positionSeconds: new Array(100).fill(0) }; r.days.push(d); }
+            d.watchSeconds += secs;
+            const p0 = prev.position + dp * ((k - prev.at) / (now - prev.at));
+            const p1 = prev.position + dp * ((end - prev.at) / (now - prev.at));
+            for (let i = Math.min(99, Math.floor(p0 / dur * 100)); i < 100; i++) {
+                const lo = Math.max(p0, i * dur / 100), hi = Math.min(p1, (i + 1) * dur / 100);
+                if (hi > lo) d.positionSeconds[i] += secs * (hi - lo) / (p1 - p0);
+                if (hi >= p1) break;
+            }
+            k = end;
+        }
+
+        if (!r.qualifiedAt && r.watchSeconds >= Math.min(30, dur / 2)) r.qualifiedAt = r.lastAt;
+        if (!r.completedAt && sumRanges(r.ranges) >= 0.9 * dur) r.completedAt = r.lastAt;
+    }
+
+    // The site sends every 60s; Grayjay has no "player closed" hook, so send
+    // a little more often so less is lost when you back out of a video.
+    maybeFlush() {
+        if (Date.now() - this.lastFlushAt >= 20000) this.flush();
+    }
+
+    flush() {
+        this.lastFlushAt = Date.now();
+        const r = this.snap;
+        if (!r || !(r.watchSeconds > 0)) return;
+        const key = r.sessionId + ":" + r.lastAt + ":" + this.changes;
+        if (key === this.lastSentKey) return;
+        this.lastSentKey = key;
+        r.sequence++;
+        const body = Object.assign(JSON.parse(JSON.stringify(r)), {
+            discovery: { source: "unknown", device: "mobile" },
+            rewards: { visitId: visitId() },
+            silver: { startedBy: "user" }
+        });
+        try {
+            const resp = http.POST(apiUrl("/analytics/playback"), JSON.stringify(body),
+                Object.assign(apiHeaders(), { "Content-Type": "application/json" }), true);
+            debug("playback report #" + r.sequence + " (" + Math.round(r.watchSeconds) + "s watched) -> HTTP " + resp.code);
+        } catch (e) { log("playback report failed: " + e); }
+    }
+
+    finish() {
+        if (this.finishSent) return;
+        this.finishSent = true; // don't retry on every tick if the call fails
+        postWatch(this.videoId, "finish");
+    }
+}
+
+function newSnapshot(videoId, duration, startAt, now) {
+    return {
+        version: 1,
+        sessionId: uuid(),
+        anonymousId: anonymousId(),
+        userId: currentUserId(),
+        videoId: videoId,
+        contentKind: "video",
+        platform: "web",
+        sequence: 0,
+        startedAt: new Date(startAt).toISOString(),
+        lastAt: new Date(now).toISOString(),
+        duration: duration,
+        watchSeconds: 0,
+        ranges: [],
+        days: [],
+        hours: [],
+        interactions: { forwardSeeks: 0, backwardSeeks: 0, rewatchedSeconds: 0, exitedAt: null, exitPosition: null },
+        qualifiedAt: null,
+        completedAt: null
+    };
+}
+
+function mergeRanges(ranges, add) {
+    const out = [];
+    for (const a of ranges.concat([add]).sort((x, y) => x[0] - y[0])) {
+        const last = out[out.length - 1];
+        if (last && a[0] <= last[1]) last[1] = Math.max(last[1], a[1]);
+        else out.push([a[0], a[1]]);
+    }
+    return out;
+}
+function sumRanges(ranges) { return ranges.reduce((t, r) => t + r[1] - r[0], 0); }
+
+function uuid() {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+        const r = Math.floor(16 * Math.random());
+        return (c === "x" ? r : (r & 3) | 8).toString(16);
+    });
+}
+
+// Stays the same across app restarts (saved with the plugin's state)
+function anonymousId() {
+    if (!state.anonymousId) state.anonymousId = uuid();
+    return state.anonymousId;
+}
+// One "visit" per time the plugin is loaded, like a browser tab session
+function visitId() {
+    if (!cache.visitId) cache.visitId = uuid();
+    return cache.visitId;
+}
+function currentUserId() {
+    if (cache.userId !== undefined) return cache.userId;
+    try { cache.userId = apiGetJson("/auth").user?.id ?? null; }
+    catch (e) { cache.userId = null; }
+    return cache.userId;
 }
 
 function postWatch(videoId, action) {
