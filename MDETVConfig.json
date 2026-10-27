@@ -8,7 +8,7 @@
   "scriptUrl": "./MDETVScript.js",
   "iconUrl": "https://cdn.mde.tv/logos/logo-basic-alt-white.png",
   "id": "0a59adc6-e8fa-4c72-8227-3ab303b0c72b",
-  "version": 1,
+  "version": 2,
   "scriptSignature": "",
   "scriptPublicKey": "",
   "packages": ["Http"],
@@ -16,10 +16,11 @@
   "allowUrls": ["everywhere"],
   "supportedClaimTypes": [],
   "authentication": {
-    "loginUrl": "https://www.mde.tv/login",
-    "completionUrl": "https://www.mde.tv/",
+    "loginUrl": "https://www.mde.tv/",
+    "cookiesToFind": ["mde-access-token", "mde-refresh-token"],
+    "cookiesExclOthers": false,
     "userAgent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36",
-    "loginWarning": "Sign in with your MDE.tv account. When the site returns you to the MDE.tv home page, Grayjay saves your session and closes this window."
+    "loginWarning": "Open the menu at the top of the MDE.tv page and sign in. Grayjay saves your session and closes this window as soon as you're logged in."
   },
   "settings": [
     {
@@ -31,6 +32,7 @@
     }
   ],
   "changelog": {
-    "1": ["Initial version: series as creators, subscription import, login for paid videos"]
+    "1": ["Initial version: series as creators, subscription import, login for paid videos"],
+    "2": ["Login now starts on the MDE.tv home page and completes when the MDE.tv session cookies are set"]
   }
 }
