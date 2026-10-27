@@ -1,0 +1,36 @@
+{
+  "name": "MDE.tv",
+  "description": "Million Dollar Extreme content from MDE.tv. Every MDE.tv series shows up as a creator; log in to play members-only videos.",
+  "author": "Unofficial",
+  "authorUrl": "",
+  "platformUrl": "https://www.mde.tv",
+  "sourceUrl": "https://YOUR-HOST/MDETVConfig.json",
+  "scriptUrl": "./MDETVScript.js",
+  "iconUrl": "https://cdn.mde.tv/logos/logo-basic-alt-white.png",
+  "id": "0a59adc6-e8fa-4c72-8227-3ab303b0c72b",
+  "version": 1,
+  "scriptSignature": "",
+  "scriptPublicKey": "",
+  "packages": ["Http"],
+  "allowEval": false,
+  "allowUrls": ["everywhere"],
+  "supportedClaimTypes": [],
+  "authentication": {
+    "loginUrl": "https://www.mde.tv/login",
+    "completionUrl": "https://www.mde.tv/",
+    "userAgent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36",
+    "loginWarning": "Sign in with your MDE.tv account. When the site returns you to the MDE.tv home page, Grayjay saves your session and closes this window."
+  },
+  "settings": [
+    {
+      "variable": "debugLogging",
+      "name": "Debug logging",
+      "description": "Write what the plugin finds on each MDE.tv page to the Grayjay log (useful for fixing the plugin if the site changes).",
+      "type": "Boolean",
+      "default": "false"
+    }
+  ],
+  "changelog": {
+    "1": ["Initial version: series as creators, subscription import, login for paid videos"]
+  }
+}
