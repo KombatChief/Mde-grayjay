@@ -21,6 +21,11 @@ const REGEX_SERIES = /^https?:\/\/(?:www\.)?mde\.tv\/series\/([A-Za-z0-9_-]+)\/?
 const REGEX_VIDEO = /^https?:\/\/(?:www\.)?mde\.tv\/series\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\/?(?:[?#].*)?$/;
 const REGEX_WRITER = /^https?:\/\/(?:www\.)?mde\.tv\/posts\?(?:.*&)?writer=([A-Za-z0-9_-]+)/;
 const REGEX_POST = /^https?:\/\/(?:www\.)?mde\.tv\/posts\/([A-Za-z0-9_-]+)\/?(?:[?#].*)?$/;
+// Audio ("Listen") series and tracks. Tracks have no page of their own on the
+// site, so they use the series page plus ?track={id}.
+const REGEX_AUDIO_SERIES = /^https?:\/\/(?:www\.)?mde\.tv\/listen\/([A-Za-z0-9_-]+)\/?(?:#.*)?$/;
+const REGEX_AUDIO_TRACK = /^https?:\/\/(?:www\.)?mde\.tv\/listen\/([A-Za-z0-9_-]+)\/?\?(?:.*&)?track=([A-Za-z0-9-]+)/;
+const AUDIO_PAGE_SIZE = 50;
 
 let config = {};
 let settings = {};
@@ -114,10 +119,18 @@ source.searchChannels = function (query, continuationToken) {
 // ---------------------------------------------------------------------------
 
 source.isChannelUrl = function (url) {
-    return REGEX_SERIES.test(url ?? "") || REGEX_WRITER.test(url ?? "");
+    return REGEX_SERIES.test(url ?? "") || REGEX_WRITER.test(url ?? "") || REGEX_AUDIO_SERIES.test(url ?? "");
 };
 
 source.getChannel = function (url) {
+    let a = REGEX_AUDIO_SERIES.exec(url);
+    if (a) {
+        const s = getAudioSeriesList().find(x => x.tag === a[1]);
+        if (s) return audioSeriesToChannel(s);
+        const j = apiGetJson("/series/" + a[1] + "/audio?page=0&pageSize=1");
+        if (j.series) return audioSeriesToChannel(j.series);
+        throw new ScriptException("Unknown MDE.tv audio series: " + a[1]);
+    }
     let m = REGEX_SERIES.exec(url);
     if (m) {
         const s = getSeriesList().find(x => x.tag === m[1]);
@@ -141,6 +154,8 @@ source.getChannelCapabilities = function () {
 };
 
 source.getChannelContents = function (url, type, order, filters, continuationToken) {
+    const a = REGEX_AUDIO_SERIES.exec(url);
+    if (a) return new AudioSeriesPager(a[1], 0);
     let m = REGEX_SERIES.exec(url);
     if (m) return new SeriesPager(m[1], 0);
     m = REGEX_WRITER.exec(url);
@@ -173,10 +188,12 @@ source.getUserSubscriptions = function () {
 // ---------------------------------------------------------------------------
 
 source.isContentDetailsUrl = function (url) {
-    return REGEX_VIDEO.test(url ?? "") || REGEX_POST.test(url ?? "");
+    return REGEX_VIDEO.test(url ?? "") || REGEX_POST.test(url ?? "") || REGEX_AUDIO_TRACK.test(url ?? "");
 };
 
 source.getContentDetails = function (url) {
+    const a = REGEX_AUDIO_TRACK.exec(url);
+    if (a) return getAudioDetails(a[1], a[2]);
     let m = REGEX_VIDEO.exec(url);
     if (m) return getVideoDetails(m[1], m[2]);
     m = REGEX_POST.exec(url);
@@ -192,9 +209,15 @@ function getVideoDetails(seriesTag, slug) {
     const series = getSeriesList().find(s => s.tag === (v.series_tag ?? seriesTag));
     cache.videoInfo = cache.videoInfo ?? {};
     cache.videoInfo[slug] = { id: v.id, duration: num(v.duration) ?? 0 };
+    cache.chapters = cache.chapters ?? {};
+    cache.chapters[slug] = j.chapters ?? [];
 
-    // Signed HLS playlist (requires access to the series for paid videos)
-    const signResp = http.GET(apiUrl("/videos/" + v.id + "/sign"), apiHeaders(), bridge.isLoggedIn());
+    // Signed HLS playlist (requires access to the series for paid videos) and
+    // the site's MP4 download files, fetched together
+    const [signResp, dlResp] = http.batch()
+        .GET(apiUrl("/videos/" + v.id + "/sign"), apiHeaders(), bridge.isLoggedIn())
+        .GET(apiUrl("/videos/" + v.id + "/download"), apiHeaders(), bridge.isLoggedIn())
+        .execute();
     if (!signResp.isOk) {
         debug("sign " + v.id + " -> HTTP " + signResp.code);
         if (signResp.code === 401 || signResp.code === 403) {
@@ -233,7 +256,7 @@ function getVideoDetails(seriesTag, slug) {
                 // The video CDN may check where playback is coming from
                 requestModifier: { headers: { "Referer": SITE + "/", "Origin": SITE } }
             })
-        ]),
+        ].concat(settings.mp4Sources === false || settings.mp4Sources === "false" ? [] : mp4Sources(dlResp, v))),
         rating: new RatingLikesDislikes(d.likes ?? 0, d.dislikes ?? 0),
         subtitles: subtitles
     });
@@ -251,6 +274,248 @@ function getVideoDetails(seriesTag, slug) {
     };
     return details;
 }
+
+// ---------------------------------------------------------------------------
+// History import: brings your MDE.tv "Watched Videos" list into Grayjay's
+// history (Grayjay asks for this on startup and from "Sync history").
+//
+// The site's list is newest-first but has no "watched at" times, which
+// Grayjay needs. So the plugin remembers the list between syncs: videos that
+// moved to the top since the last sync get the current time, everything else
+// keeps the time it was given before. On the very first sync, times are
+// spaced one minute apart going back from now, just to keep the order.
+// ---------------------------------------------------------------------------
+
+source.getUserHistory = function () {
+    if (!bridge.isLoggedIn()) return new ContentPager([], false, {});
+    const userId = currentUserId();
+    if (!userId) return new ContentPager([], false, {});
+    return new MdeHistoryPager(userId, 0);
+};
+
+class MdeHistoryPager extends ContentPager {
+    constructor(userId, page) {
+        const j = apiGetJson("/playlists/history-" + userId + "?page=" + page);
+        const list = j.playlist?.videos ?? [];
+        const dates = historyDates(list, page);
+        const seriesById = {};
+        for (const s of getSeriesList()) seriesById[s.id] = s;
+        const items = list.map((v, i) => {
+            const pv = toPlatformVideo(v, seriesById[v.series]);
+            const dur = Math.max(1, Math.round(num(v.duration) ?? 1));
+            // Finished episodes show as fully watched; ones only opened show as started
+            pv.playbackTime = v.watched === false ? Math.min(30, dur) : dur;
+            pv.playbackDate = dates[i];
+            return pv;
+        });
+        super(items, list.length > 0 && !!j.playlist?.hasMore, { page: page });
+        this.userId = userId;
+        this.page = page;
+    }
+    nextPage() { return new MdeHistoryPager(this.userId, this.page + 1); }
+}
+
+function historyDates(list, page) {
+    state.historyDates = state.historyDates ?? {};
+    const known = state.historyDates;
+    const now = Math.floor(Date.now() / 1000);
+    const out = [];
+    if (page === 0) {
+        // Everything above the previous sync's top video is new or re-watched
+        const prevTop = state.historyTop;
+        let cut = prevTop ? list.findIndex(v => v.id === prevTop) : -1;
+        if (cut < 0) cut = prevTop ? list.length : -1;
+        for (let i = 0; i < list.length; i++) {
+            const id = list[i].id;
+            if (cut === -1) known[id] = known[id] ?? (now - i * 60);
+            else if (i < cut) known[id] = now - i;
+            out.push(known[id] ?? (now - i * 60));
+        }
+        if (list[0]) state.historyTop = list[0].id;
+    } else {
+        // Older pages: keep stored times, otherwise continue the spacing
+        let floor = Math.min(...Object.values(known).concat([now]));
+        for (const v of list) {
+            if (known[v.id] === undefined) { floor -= 60; known[v.id] = floor; }
+            out.push(known[v.id]);
+        }
+    }
+    // Keep the saved list from growing forever
+    const ids = Object.keys(known);
+    if (ids.length > 2000) {
+        ids.sort((a, b) => known[a] - known[b]).slice(0, ids.length - 2000).forEach(id => delete known[id]);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Audio ("Listen" section): podcasts, music and soundtracks as MP3s.
+// The site doesn't count audio toward watch time, so no tracker for these.
+// ---------------------------------------------------------------------------
+
+function getAudioSeriesList() {
+    if (cache.audioSeries) return cache.audioSeries;
+    let list = [];
+    try {
+        const j = apiGetJson("/series/audio");
+        list = (j.series ?? []).filter(s => s.tag);
+        list.sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+    } catch (e) { log("couldn't load audio series: " + e); }
+    cache.audioSeries = list;
+    return list;
+}
+
+class AudioSeriesPager extends ContentPager {
+    constructor(tag, page) {
+        const j = apiGetJson("/series/" + tag + "/audio?page=" + page + "&pageSize=" + AUDIO_PAGE_SIZE);
+        const tracks = j.audio ?? [];
+        rememberTracks(tracks);
+        super(tracks.map(t => toPlatformAudio(t, j.series)), tracks.length > 0 && (page + 1) * AUDIO_PAGE_SIZE < (j.total ?? 0), { tag: tag, page: page });
+        this.tag = tag;
+        this.page = page;
+    }
+    nextPage() { return new AudioSeriesPager(this.tag, this.page + 1); }
+}
+
+function rememberTracks(tracks) {
+    cache.tracks = cache.tracks ?? {};
+    for (const t of tracks) if (t && t.id) cache.tracks[t.id] = t;
+}
+
+// There's no single-track endpoint, so find the track in its series (the
+// signed MP3 link comes with each listing and expires, so always re-fetch).
+function findTrack(tag, id) {
+    for (let page = 0; page < 40; page++) {
+        const j = apiGetJson("/series/" + tag + "/audio?page=" + page + "&pageSize=100");
+        const tracks = j.audio ?? [];
+        rememberTracks(tracks);
+        const t = tracks.find(x => x.id === id);
+        if (t) return { track: t, series: j.series };
+        if (tracks.length === 0 || (page + 1) * 100 >= (j.total ?? 0)) break;
+    }
+    return null;
+}
+
+function getAudioDetails(tag, id) {
+    const found = findTrack(tag, id);
+    if (!found) throw new UnavailableException("MDE.tv couldn't find this track.");
+    const t = found.track;
+    const sig = t.signature;
+    if (!t.url || !sig || !sig.token) {
+        if (!bridge.isLoggedIn())
+            throw new ScriptLoginRequiredException("This MDE.tv track is for members. Log in to MDE.tv in the plugin settings to listen.");
+        throw new UnavailableException("Your MDE.tv account doesn't have access to this track.");
+    }
+    const url = t.url + (t.url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(sig.token) + "&expires=" + encodeURIComponent(sig.expires);
+    const base = toPlatformAudio(t, found.series);
+    return new PlatformVideoDetails({
+        id: base.id,
+        name: base.name,
+        thumbnails: base.thumbnails,
+        author: base.author,
+        datetime: base.datetime,
+        duration: base.duration,
+        viewCount: base.viewCount,
+        url: base.url,
+        shareUrl: base.url,
+        isLive: false,
+        description: t.description ?? "",
+        video: new UnMuxVideoSourceDescriptor([], [
+            new AudioUrlSource({
+                name: "MP3",
+                url: url,
+                container: "audio/mpeg",
+                codec: "mp3",
+                bitrate: 0,
+                duration: num(t.duration) ?? 0,
+                language: Language.UNKNOWN
+            })
+        ]),
+        rating: new RatingLikes(0),
+        subtitles: []
+    });
+}
+
+function toPlatformAudio(t, series) {
+    const tag = t.series_tag ?? series?.tag ?? "";
+    const s = series ?? getAudioSeriesList().find(x => x.tag === tag);
+    const url = SITE + "/listen/" + tag + "?track=" + t.id;
+    const thumb = cdnImage(s?.medium_thumbnail) ?? cdnImage(s?.small_thumbnail) ?? cdnImage(s?.thumbnail) ?? DEFAULT_THUMB;
+    return new PlatformVideo({
+        id: new PlatformID(PLATFORM, t.id, config.id),
+        name: t.title ?? t.tag ?? "Track",
+        thumbnails: new Thumbnails([new Thumbnail(thumb, 720)]),
+        author: new PlatformAuthorLink(
+            new PlatformID(PLATFORM, s?.id ?? tag, config.id),
+            t.series_name ?? s?.name ?? tag,
+            SITE + "/listen/" + tag,
+            cdnImage(s?.small_thumbnail) ?? LOGO),
+        datetime: toUnix(t.created_at) ?? 0,
+        duration: Math.round(num(t.duration) ?? 0),
+        viewCount: -1,
+        url: url,
+        shareUrl: SITE + "/listen/" + tag,
+        isLive: false
+    });
+}
+
+function audioSeriesToChannel(s) {
+    return new PlatformChannel({
+        id: new PlatformID(PLATFORM, s.id ?? s.tag, config.id),
+        // Some audio series share a name with a video series ("The Sam Hyde Show")
+        name: /audio/i.test(s.name ?? "") ? s.name : (s.name ?? s.tag) + " (Audio)",
+        thumbnail: cdnImage(s.small_thumbnail) ?? cdnImage(s.medium_thumbnail) ?? LOGO,
+        banner: cdnImage(s.medium_thumbnail) ?? "",
+        subscribers: 0,
+        description: (s.description ?? "") + (s.episodes ? "\n\n" + s.episodes + " tracks (audio)" : ""),
+        url: SITE + "/listen/" + s.tag,
+        links: {}
+    });
+}
+
+// The site's own download files (MP4 with audio, typically 1080p/720p/480p).
+// Not every episode has them; newer uploads often don't.
+function mp4Sources(resp, v) {
+    if (!resp || !resp.isOk) { debug("no MP4 downloads for " + v.tag + " (HTTP " + (resp?.code ?? "?") + ")"); return []; }
+    let list = [];
+    try { list = JSON.parse(resp.body).videoDownloadURLs ?? []; } catch (e) { return []; }
+    const out = [];
+    for (const it of list) {
+        if (!it || typeof it.url !== "string") continue;
+        const h = parseInt(String(it.quality ?? "").replace(/\D/g, ""), 10) || 0;
+        out.push(new VideoUrlSource({
+            name: (it.quality ?? "MP4") + " MP4",
+            url: it.url,
+            container: "video/mp4",
+            codec: "avc1",
+            width: h ? Math.round(h * 16 / 9) : 0,
+            height: h,
+            bitrate: 0,
+            duration: num(v.duration) ?? 0,
+            requestModifier: { headers: { "Referer": SITE + "/", "Origin": SITE } }
+        }));
+    }
+    out.sort((a, b) => b.height - a.height);
+    return out;
+}
+
+// Chapters, when an episode has them ({title, start, end} in seconds)
+source.getContentChapters = function (url) {
+    const m = REGEX_VIDEO.exec(url ?? "");
+    if (!m) return [];
+    let chapters = cache.chapters?.[m[2]];
+    if (!chapters) {
+        try { chapters = apiGetJson("/videos/" + m[2]).chapters ?? []; } catch (e) { return []; }
+    }
+    return chapters
+        .filter(c => c && num(c.start) !== null)
+        .map(c => ({
+            name: c.title ?? "Chapter",
+            timeStart: num(c.start),
+            timeEnd: num(c.end) ?? num(c.start),
+            type: Type.Chapter.NORMAL
+        }));
+};
 
 // ---------------------------------------------------------------------------
 // Comments (videos and screeds). MDE.tv returns 10 per page, newest first,
@@ -628,6 +893,8 @@ function getWriters() {
 
 function getAllChannels() {
     const channels = getSeriesList().map(seriesToChannel);
+    if (settings.audioCreators !== false && settings.audioCreators !== "false")
+        for (const s of getAudioSeriesList()) channels.push(audioSeriesToChannel(s));
     try { for (const w of getWriters()) channels.push(writerToChannel(w)); }
     catch (e) { log("couldn't load screed writers: " + e); }
     return channels;
