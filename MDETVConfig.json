@@ -8,7 +8,7 @@
   "scriptUrl": "./MDETVScript.js",
   "iconUrl": "https://cdn.mde.tv/logos/logo-basic-alt-white.png",
   "id": "0a59adc6-e8fa-4c72-8227-3ab303b0c72b",
-  "version": 7,
+  "version": 8,
   "scriptSignature": "",
   "scriptPublicKey": "",
   "packages": [
@@ -79,6 +79,9 @@
     ],
     "7": [
       "Comments and replies on episodes and screeds (newest first, pinned comments on top)"
+    ],
+    "8": [
+      "Fix: leaving a video no longer marks it watched; only playing past 95% does"
     ]
   }
 }
